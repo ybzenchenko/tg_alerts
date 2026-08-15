@@ -1,17 +1,27 @@
 # TG Alerts — Binance Market Monitoring & Telegram Alert System
 
-A Python-based crypto market monitoring system that uses the Binance public API to identify active USDT spot markets, stream live candlestick data, detect predefined technical patterns, and send real-time Telegram alerts.
+A Python-based crypto market monitoring and alerting system built around the Binance public API.
 
-The project combines scheduled batch processing with a continuously running WebSocket service:
+The project identifies active USDT spot markets, streams live candlestick data, detects predefined technical patterns, stores raw and processed outputs in Amazon S3, and sends real-time Telegram alerts. The collected S3 data is also exposed to Amazon Athena through the AWS Glue Data Catalog for further analysis.
 
-- **Apache Airflow** runs the daily market filtering workflow.
-- **Binance REST API** is used for market metadata, historical candles, and recovery backfills.
-- **Binance WebSocket streams** provide live 3-minute and 5-minute closed-candle data.
-- **Amazon S3** stores filters, candles, logs, and alert outputs.
-- **systemd** keeps the live engine running continuously on an AWS EC2 instance.
-- **Telegram Bot API** delivers real-time alerts.
+> This project is intended for market-data research and portfolio demonstration. It does not execute trades or provide financial advice.
 
-> This project is for market monitoring and research. It does not execute trades.
+---
+
+## Project Overview
+
+The solution combines three different workloads:
+
+1. **Daily market filtering**  
+   Apache Airflow runs a scheduled Python workflow that identifies Binance symbols with sufficient liquidity and recent price activity.
+
+2. **Continuous live monitoring**  
+   A long-running Python service consumes Binance WebSocket streams, evaluates closed 3-minute and 5-minute candles, detects trigger patterns, and sends Telegram alerts.
+
+3. **Post-run analytics**  
+   Data stored in S3 is registered as external Athena tables through the AWS Glue Data Catalog. This makes the collected trigger and processing-log data queryable without loading it into a separate database.
+
+The production pipeline was deployed on an Ubuntu EC2 instance and used to collect a one-week market-data sample for subsequent analysis.
 
 ---
 
@@ -19,27 +29,53 @@ The project combines scheduled batch processing with a continuously running WebS
 
 ```mermaid
 flowchart TD
-    A[Binance REST API] --> B[Daily General Filters]
-    B --> C[Apache Airflow]
-    C --> D[Amazon S3<br/>Eligible Symbols]
+    REST[Binance REST API]
+    WS[Binance WebSocket API]
 
-    D --> E[Live Engine]
-    F[Binance WebSocket<br/>3m & 5m Closed Candles] --> E
-    A --> E
+    AIRFLOW[Apache Airflow]
+    FILTERS[Daily General Filters]
+    LIVE[Live Trigger Engine]
+    SYSTEMD[systemd]
 
-    E --> G[Amazon S3<br/>Candles & Trigger Results]
-    E --> H[Telegram Alerts]
+    S3[(Amazon S3)]
+    TG[Telegram Bot API]
 
-    I[systemd] --> E
+    GLUE[AWS Glue Data Catalog]
+    ATHENA[Amazon Athena]
+    ANALYSIS[SQL / Analytical Modelling]
+
+    AIRFLOW --> FILTERS
+    REST --> FILTERS
+    FILTERS --> S3
+
+    S3 --> LIVE
+    WS --> LIVE
+    REST --> LIVE
+    SYSTEMD --> LIVE
+
+    LIVE --> S3
+    LIVE --> TG
+
+    S3 --> GLUE
+    GLUE --> ATHENA
+    S3 --> ATHENA
+    ATHENA --> ANALYSIS
 ```
 
-The system has two main components:
+### Runtime separation
 
-1. **Daily filtering pipeline**  
-   Determines which Binance USDT spot markets are active enough to monitor.
+The project intentionally separates business logic from orchestration:
 
-2. **Live trigger engine**  
-   Streams closed candles for the selected symbols, maintains recent history, evaluates trigger conditions, and sends Telegram alerts.
+```text
+Apache Airflow
+      |
+      v
+crypto_general_filters.py
+```
+
+The Airflow DAG defines **when and how** the daily workflow runs, while the Python module contains the actual Binance filtering logic.
+
+The live engine is different: it is a continuously running WebSocket process and therefore runs as a `systemd` service rather than as an Airflow task.
 
 ---
 
@@ -47,41 +83,64 @@ The system has two main components:
 
 ```text
 .
-├── crypto-general-filters.py
-├── crypto-live-engine-triggers.py
-├── tg_alerts_general_filters_daily_dag.py
 ├── README.md
-└── .gitignore
+├── LICENSE
+├── .gitignore
+│
+├── src/
+│   ├── crypto_general_filters.py
+│   └── crypto_live_engine_triggers.py
+│
+├── dags/
+│   └── tg_alerts_general_filters_daily_dag.py
+│
+├── sql/
+│   └── athena/
+│       ├── create_trigger_1_results_raw.sql
+│       ├── create_trigger_2_results_raw.sql
+│       ├── create_general_filters_run_summary_raw.sql
+│       └── create_general_filters_symbol_processing_log_raw.sql
+│
+└── scripts/
+    └── maintenance/
+        ├── reorganize_general_filters_logs_s3.cmd
+        ├── reorganize_general_filters_logs_s3.sh
+        └── README.md
 ```
 
-### `crypto-general-filters.py`
+---
 
-Runs the daily market-selection logic.
+## Main Components
+
+### `src/crypto_general_filters.py`
+
+Daily Binance market-selection workflow.
 
 Main responsibilities:
 
-- Retrieves Binance exchange information.
+- Retrieves Binance exchange metadata.
 - Keeps active USDT spot markets.
 - Excludes stablecoin / fiat-like base assets.
-- Applies minimum 24-hour quote-volume requirements.
-- Measures recent price movement.
-- Builds custom 10-minute candles from completed 5-minute candles.
-- Applies recent-activity filters.
-- Writes the final eligible-symbol list to Amazon S3.
+- Applies a minimum 24-hour quote-volume threshold.
+- Evaluates recent 6-hour and 12-hour price movement.
+- Builds custom 10-minute candles from completed 5-minute Binance candles.
+- Applies a recent-activity filter.
+- Writes the eligible-symbol output and processing logs to S3.
+- Tracks active-cycle metadata for symbols that remain eligible across runs.
 
-### `tg_alerts_general_filters_daily_dag.py`
+### `dags/tg_alerts_general_filters_daily_dag.py`
 
-Apache Airflow DAG responsible for orchestration.
+Apache Airflow orchestration layer for the general-filter workflow.
 
 The DAG:
 
 - Runs once per day at **01:00 UTC**.
 - Executes the general-filter Python script.
-- Keeps scheduling logic separate from the market-processing logic.
+- Keeps scheduling and orchestration separate from the filtering logic.
 
-This separation makes the filtering code easier to run, test, and debug independently of Airflow.
+This separation makes the Python workflow easier to run, test, debug, and reuse independently of Airflow.
 
-### `crypto-live-engine-triggers.py`
+### `src/crypto_live_engine_triggers.py`
 
 Continuously running live market-monitoring service.
 
@@ -89,22 +148,24 @@ Main responsibilities:
 
 - Loads the latest eligible-symbol list from S3.
 - Subscribes to Binance WebSocket kline streams.
-- Processes only **closed 3-minute and 5-minute candles**.
-- Stores candle history in S3.
-- Maintains recent candle history in memory for trigger calculations.
-- Detects technical trigger patterns.
-- Writes trigger results to S3.
-- Sends Telegram alerts.
-- Detects unhealthy WebSocket connections and allows `systemd` to restart the service automatically.
-- Backfills recent missing candles through the Binance REST API after restart.
+- Processes only completed **3-minute and 5-minute candles**.
+- Stores candle batches in S3.
+- Maintains recent candle history in memory for rolling calculations.
+- Detects Trigger 1 and Trigger 2 patterns.
+- Saves trigger results to S3.
+- Sends real-time Telegram alerts.
+- Monitors WebSocket health.
+- Terminates itself when the connection becomes unhealthy so that `systemd` can restart it.
+- Reloads recent S3 history after restart.
+- Backfills missing recent candles through the Binance REST API before live processing resumes.
 
 ---
 
-## Market Filtering Logic
+## Daily Market Filtering
 
-The daily general filter starts with Binance spot markets and applies several conditions.
+The daily filter reduces the Binance spot universe to symbols worth monitoring.
 
-### Base market filters
+### Base filters
 
 A symbol must:
 
@@ -118,112 +179,118 @@ A symbol must:
 
 A symbol must satisfy at least one of:
 
-- 6-hour price range >= **3%**
-- 12-hour price range >= **6%**
+- 6-hour range >= **3%**
+- 12-hour range >= **6%**
+
+The rolling range is calculated as:
+
+```text
+(high - low) / low * 100
+```
 
 ### Recent-activity filter
 
-Because Binance does not provide a native 10-minute kline interval, the script builds each 10-minute candle from two completed 5-minute candles.
+Binance does not provide a native 10-minute kline interval, so the workflow constructs each 10-minute candle from two completed 5-minute candles.
 
-For the previous 12 custom 10-minute candles:
+For each custom candle:
 
 ```text
-range % = (high - low) / open × 100
+range % = (high - low) / open * 100
 ```
 
-The symbol passes when the average range is at least **0.5%**.
+The previous 12 custom 10-minute candles are evaluated, and the symbol passes when their average range is at least **0.5%**.
 
 ---
 
 ## Live Trigger Engine
 
-The live engine monitors:
-
-```text
-3m
-5m
-```
-
-Binance WebSocket streams are used for real-time data, and only completed candles are evaluated.
-
 ### Trigger 1 — Swing-Low Breakdown
 
-A seven-candle pattern is used to identify a confirmed swing low.
+Trigger 1 is a short-side seven-candle swing-low breakdown pattern.
 
-The setup includes:
+The swing-low setup includes:
 
-- Three descending closes before the swing low.
-- A local minimum at candle 4.
-- Three ascending closes after the swing low.
-- The swing-low close must be below the previous 40 closes.
-- Swing depth must be large enough relative to recent average candle bodies.
+- `C1.close > C2.close > C3.close`
+- C4 is the lowest close among the seven candles.
+- C4 is below each of the previous 40 closes.
+- `C5.close < C6.close < C7.close`
+- Swing depth is at least 2x the recent average candle body.
 
-After a swing low is confirmed, a future candle can trigger an alert when:
+After the swing low has been confirmed, a future candle triggers when:
 
-- Its close breaks below the swing-low price.
-- Its quote volume is above the recent average.
+- Its close breaks below the active swing-low price.
+- Its quote volume exceeds the average quote volume of the recent lookback.
+
+The breaking candle close is used as the trigger / entry price.
 
 ### Trigger 2 — Upper-Wick Rejection
 
-A three-candle pattern designed to identify strong rejection after upward momentum.
+Trigger 2 is a short-side three-candle rejection pattern.
 
 The setup includes:
 
-- Three consecutive rising closes.
-- A new high close relative to the recent lookback.
-- A large upper wick relative to the candle body.
-- A very small lower wick.
-- Elevated candle-body size and quote volume.
+- `C1.close < C2.close < C3.close`
+- C3 closes above the previous 39 closes.
+- C3 has a positive candle body.
+- C3 upper shadow is at least 2x its body.
+- C3 lower shadow is less than 15% of its body.
+- C1 and C2 have elevated quote volume.
+- C1 and C2 have elevated candle-body size relative to their recent lookback.
 
-The entry / trigger price is the close of the third candle.
+The close of C3 is used as the trigger / entry price.
 
 ---
 
 ## WebSocket Recovery and Backfill
 
-A continuously running WebSocket process can remain alive even when the underlying connection has stopped delivering useful data. The live engine therefore includes an application-level health check.
+A process can remain alive even after its WebSocket connection has stopped delivering useful data. For that reason, the live engine includes application-level health monitoring rather than relying only on process status.
 
-If the WebSocket becomes unhealthy:
+Recovery flow:
 
-1. The live engine intentionally terminates.
-2. `systemd` automatically restarts the process.
-3. Recent candle files are loaded from S3.
-4. The latest expected closed candles are checked.
-5. Missing candles are fetched from Binance REST API.
-6. Repaired candle data is merged and saved back to S3.
-7. The WebSocket connection starts again.
+```text
+WebSocket becomes unhealthy
+        |
+        v
+Live engine exits intentionally
+        |
+        v
+systemd restarts the process
+        |
+        v
+Recent S3 candle history is loaded
+        |
+        v
+Recent expected candles are checked
+        |
+        v
+Missing candles are fetched from Binance REST API
+        |
+        v
+Recovered candles are merged back into S3
+        |
+        v
+WebSocket live processing resumes
+```
 
-Recent restored candles are used as calculation context for 40-candle lookbacks.
+At startup, the engine loads only a bounded recent history rather than the complete S3 candle archive. This provides enough context for rolling 40-candle calculations while keeping restart time and memory usage controlled.
 
-Historical downtime data is **not replayed to generate delayed Telegram alerts**, preventing stale catch-up notifications.
+Backfilled historical candles are used as calculation context. The engine does **not** replay historical downtime data to generate delayed Telegram alerts.
 
 ---
 
-## AWS Components
+## Amazon S3 Data Layout
 
-### Amazon EC2
-
-The Python services run on an Ubuntu EC2 instance.
-
-Two independent workloads are used:
-
-- Apache Airflow for scheduled orchestration.
-- A `systemd` service for the continuously running WebSocket engine.
-
-### Amazon S3
-
-S3 is used as persistent storage for:
+S3 is the persistent storage layer for:
 
 - General-filter outputs.
-- Recent activity logs.
+- General-filter processing logs.
 - 3-minute and 5-minute candles.
-- Swing-low results.
-- Trigger results.
+- Swing-low search results.
+- Trigger 1 results.
+- Trigger 2 results.
 - Telegram alert records.
 
-Candle data is partitioned by interval, date, and candle time.
-
-Example:
+### Candle partitions
 
 ```text
 candles/
@@ -233,39 +300,129 @@ candles/
             └── candles.csv
 ```
 
-S3 provides persistent history, while the running Python process keeps only the recent working set required for trigger calculations in memory.
+The same layout is used for the 5-minute interval.
+
+### Trigger result partitions
+
+```text
+trigger-1-results/
+└── interval=3m/
+    └── trigger_date=YYYY-MM-DD/
+        └── trigger_time=HHMM/
+            └── triggers.csv
+```
+
+```text
+trigger-2-results/
+└── interval=3m/
+    └── trigger_date=YYYY-MM-DD/
+        └── trigger_time=HHMM/
+            └── triggers.csv
+```
+
+The Hive-style `key=value` folder structure allows Athena to use `interval`, `trigger_date`, and `trigger_time` as partition columns.
+
+### General-filter logs
+
+The log files originally shared the same S3 partition folder despite having different CSV schemas.
+
+They were reorganized into separate prefixes:
+
+```text
+general-filters-logs/
+├── run_summary/
+│   └── run_date=YYYY-MM-DD/
+│       └── run_time=HHMM/
+│           └── run_summary.csv
+│
+└── symbol_processing_log/
+    └── run_date=YYYY-MM-DD/
+        └── run_time=HHMM/
+            └── symbol_processing_log.csv
+```
+
+This allows each log type to be exposed as an independent Athena external table.
+
+The one-time AWS CLI migration is documented under:
+
+```text
+scripts/maintenance/
+```
 
 ---
 
-## Installation
+## Athena and AWS Glue Data Catalog
 
-Clone the repository:
+Athena is used to query the S3 datasets directly.
 
-```bash
-git clone <repository-url>
-cd <repository-name>
+No Glue crawler is required for the current analytical layer. Instead, the repository contains explicit `CREATE EXTERNAL TABLE` statements under:
+
+```text
+sql/athena/
 ```
 
-Create and activate a virtual environment:
+The SQL files register the raw S3 datasets in the Glue Data Catalog.
 
-```bash
-python -m venv venv
-source venv/bin/activate
+Current raw tables:
+
+```text
+funnel.trigger_1_results_raw
+funnel.trigger_2_results_raw
+funnel.general_filters_run_summary_raw
+funnel.general_filters_symbol_processing_log_raw
 ```
 
-Install the main Python dependencies:
+Existing Hive-style partitions are registered with:
 
-```bash
-pip install pandas requests boto3 websocket-client apache-airflow
+```sql
+MSCK REPAIR TABLE <table_name>;
 ```
 
-AWS authentication should be configured through an IAM role when running on EC2.
+This approach keeps the table definitions explicit, reproducible, and version-controlled in Git.
+
+The raw CSV fields are generally registered as strings first, with stronger data types applied later in analytical queries or transformation models.
 
 ---
 
-## Environment Variables
+## Analytical Layer
 
-Telegram credentials must not be hardcoded in source code.
+The collected data can now be queried directly in Athena for questions such as:
+
+- How many Trigger 1 and Trigger 2 events occurred?
+- Which symbols generated the most alerts?
+- How frequently did triggers occur by date and interval?
+- Which general-filter runs produced the largest eligible-symbol sets?
+- Which symbols repeatedly passed or failed specific filtering stages?
+- How did price behave after each detected trigger?
+
+A future dbt layer can sit on top of Athena to create reusable staging and analytical models while keeping the original S3 files as the raw source of truth.
+
+---
+
+## AWS Runtime Components
+
+### Amazon EC2
+
+The production runtime used an Ubuntu EC2 instance.
+
+Two independent services ran on the same VM:
+
+- **Apache Airflow** — scheduled daily filtering.
+- **systemd-managed Python service** — continuous live WebSocket monitoring.
+
+Stopping the EC2 instance stops the runtime workloads while the persistent S3 data remains available for serverless Athena analysis.
+
+### AWS IAM
+
+AWS permissions are provided through IAM rather than hardcoded credentials.
+
+When running on EC2, an IAM role can provide S3 access directly to `boto3` and the AWS CLI.
+
+---
+
+## Environment Variables and Secrets
+
+Telegram credentials are not hardcoded in source code.
 
 The live engine reads:
 
@@ -274,14 +431,14 @@ TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID
 ```
 
-Example shell configuration:
+Example:
 
 ```bash
 export TELEGRAM_BOT_TOKEN="your_bot_token"
 export TELEGRAM_CHAT_ID="your_chat_id"
 ```
 
-For a production EC2 deployment, credentials can be provided through a protected environment file used by the `systemd` service.
+In the EC2 deployment, secrets can be supplied to the `systemd` service through a protected environment file.
 
 Do **not** commit:
 
@@ -291,28 +448,56 @@ Do **not** commit:
 - AWS secret keys
 - private SSH keys
 - local virtual environments
+- generated Python cache files
 
 ---
 
-## Running the Components
+## Installation
 
-### Run the general filter manually
-
-```bash
-python crypto-general-filters.py
-```
-
-### Run the live engine manually
+Clone the repository:
 
 ```bash
-python crypto-live-engine-triggers.py
+git clone <repository-url>
+cd tg_alerts
 ```
 
-In production, the live engine is better run as a supervised background service such as `systemd`.
+Create a virtual environment:
 
-### Airflow
+```bash
+python -m venv venv
+```
 
-The Airflow DAG schedules the general-filter workflow once per day.
+Activate it on Linux/macOS:
+
+```bash
+source venv/bin/activate
+```
+
+Install the main dependencies:
+
+```bash
+pip install pandas requests boto3 websocket-client apache-airflow
+```
+
+---
+
+## Running the Python Components
+
+### General filter
+
+```bash
+python src/crypto_general_filters.py
+```
+
+### Live engine
+
+```bash
+python src/crypto_live_engine_triggers.py
+```
+
+For production use, the live engine should run under a process supervisor such as `systemd`.
+
+### Airflow schedule
 
 ```text
 Schedule: 0 1 * * *
@@ -323,33 +508,53 @@ Timezone: UTC
 
 ## Reliability Features
 
-The project includes several safeguards designed for a long-running data pipeline:
+The project includes:
 
 - WebSocket health monitoring.
 - Automatic process restart through `systemd`.
-- Recent-candle recovery after restart.
+- Bounded recent-history loading after restart.
 - Binance REST backfill for missing candles.
 - S3 merge and deduplication.
-- Persistent candle storage.
-- Separation between scheduled and continuously running workloads.
+- Persistent candle and trigger storage.
+- Separation of scheduled and continuously running workloads.
+- IAM-based AWS access.
 - Environment-variable based secret management.
+- Hive-style S3 partitioning.
+- Version-controlled Athena table definitions.
 
 ---
 
 ## Technology Stack
 
-- **Python**
-- **pandas**
-- **Binance REST API**
-- **Binance WebSocket API**
-- **Apache Airflow**
-- **AWS EC2**
-- **Amazon S3**
-- **AWS IAM**
-- **boto3**
-- **systemd**
-- **Telegram Bot API**
-- **Git / GitHub**
+### Data collection and processing
+
+- Python
+- pandas
+- requests
+- boto3
+- websocket-client
+- Binance REST API
+- Binance WebSocket API
+
+### Orchestration and runtime
+
+- Apache Airflow
+- systemd
+- Ubuntu
+- Amazon EC2
+
+### Storage and analytics
+
+- Amazon S3
+- AWS Glue Data Catalog
+- Amazon Athena
+- AWS CLI
+
+### Notifications and version control
+
+- Telegram Bot API
+- Git
+- GitHub
 
 ---
 
@@ -357,34 +562,59 @@ The project includes several safeguards designed for a long-running data pipelin
 
 ### Why separate the production script from the Airflow DAG?
 
-The filtering logic and orchestration logic have different responsibilities.
+The filtering logic and orchestration logic solve different problems.
 
-The Python script contains the actual data-processing logic, while the Airflow DAG determines when and how that script is executed.
+The Python module defines **what the workflow does**, while the Airflow DAG defines **when and how it runs**.
 
-Keeping them separate makes the processing code easier to:
+Keeping them separate improves:
 
-- test locally;
-- debug independently;
-- reuse outside Airflow;
-- maintain as the project grows.
+- local testing;
+- debugging;
+- reuse;
+- maintainability.
 
-### Why use both REST and WebSocket APIs?
+### Why is the live engine not an Airflow task?
 
-The WebSocket API provides low-latency live candles, while the REST API is useful for:
+The live engine is designed to run continuously and maintain an active WebSocket connection.
 
-- startup history;
-- metadata;
-- daily filters;
-- recovery after connection failures;
-- backfilling missing candles.
+Airflow is better suited to finite scheduled workflows. A continuously running service therefore fits more naturally under `systemd`.
+
+### Why use both Binance REST and WebSocket APIs?
+
+The WebSocket API provides live candle events.
+
+The REST API supports:
+
+- exchange metadata;
+- historical context;
+- daily filtering;
+- startup recovery;
+- missing-candle backfill.
 
 ### Why use S3 and memory together?
 
-S3 provides durable storage.
+S3 provides durable persistent storage.
 
-In-memory candle history provides fast access to the recent data required for rolling 40-candle calculations.
+In-memory history gives the running engine fast access to the recent candles required by the trigger algorithms.
 
-After a process restart, the necessary recent history is restored from S3.
+After restart, recent history is restored from S3.
+
+### Why define Athena tables manually instead of using a Glue crawler?
+
+The S3 schemas and partition structures are known in advance.
+
+Explicit Athena DDL provides:
+
+- deterministic schemas;
+- controlled column names and data types;
+- reproducible infrastructure;
+- SQL definitions that can be stored and reviewed in Git.
+
+### Why reorganize the general-filter log prefixes?
+
+`run_summary.csv` and `symbol_processing_log.csv` have different schemas.
+
+Keeping both file types under the same Athena table location would mix incompatible CSV structures. Separate S3 prefixes allow each dataset to have its own external table.
 
 ---
 
@@ -392,19 +622,21 @@ After a process restart, the necessary recent history is restored from S3.
 
 Possible next steps include:
 
-- CloudWatch health alarms and service monitoring.
-- Automated tests for trigger logic.
-- CI/CD workflow for deployment.
-- S3 lifecycle rules for historical candle retention.
-- More efficient recent-prefix S3 discovery.
-- Containerization.
-- Additional trigger strategies.
-- Metrics dashboard for alert frequency and system health.
+- Build dbt staging and analytical models on top of Athena.
+- Evaluate post-trigger price performance over multiple time horizons.
+- Convert analytical datasets from CSV to Parquet.
+- Add automated tests for trigger logic.
+- Add CloudWatch health alarms.
+- Add CI/CD for deployment.
+- Add S3 lifecycle rules for historical candle retention.
+- Improve S3 prefix discovery for long-running deployments.
+- Add dashboards for trigger frequency and performance.
+- Containerize runtime components.
 
 ---
 
 ## Disclaimer
 
-This repository is an educational and portfolio project for market-data analysis and alert generation.
+This repository is an educational and portfolio project for market-data engineering, monitoring, and analysis.
 
 It does not provide financial advice and does not execute cryptocurrency trades.
