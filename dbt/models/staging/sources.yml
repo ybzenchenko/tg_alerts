@@ -1,0 +1,12 @@
+version: 2
+
+sources:
+  - name: funnel
+    database: awsdatacatalog
+    schema: funnel
+
+    tables:
+      - name: trigger_1_results_raw
+      - name: trigger_2_results_raw
+      - name: general_filters_run_summary_raw
+      - name: general_filters_symbol_processing_log_raw
