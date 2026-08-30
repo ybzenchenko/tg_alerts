@@ -6,7 +6,59 @@ sources:
     schema: funnel
 
     tables:
+
       - name: trigger_1_results_raw
+        columns:
+          - name: trigger_id
+            data_tests:
+              - not_null
+              - unique
+
+          - name: trigger_time
+            data_tests:
+              - not_null
+
       - name: trigger_2_results_raw
+        columns:
+          - name: trigger_id
+            data_tests:
+              - not_null
+              - unique
+
+          - name: trigger_time
+            data_tests:
+              - not_null
+
       - name: general_filters_run_summary_raw
+        columns:
+          - name: run_time
+            data_tests:
+              - not_null
+
+        freshness:
+          warn_after:
+            count: 24
+            period: hour
+
+        loaded_at_field: >
+          date_parse(
+            substr(run_datetime_utc, 1, 19),
+            '%Y-%m-%d %H:%i:%s'
+          )
+
       - name: general_filters_symbol_processing_log_raw
+        columns:
+          - name: run_time
+            data_tests:
+              - not_null
+
+        freshness:
+          warn_after:
+            count: 24
+            period: hour
+
+        loaded_at_field: >
+          date_parse(
+            substr(run_datetime_utc, 1, 19),
+            '%Y-%m-%d %H:%i:%s'
+          )

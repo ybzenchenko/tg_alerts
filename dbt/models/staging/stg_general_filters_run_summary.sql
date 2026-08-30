@@ -1,7 +1,4 @@
-{{ config(materialized='view') }}
-
 select
-
     -- Run metadata
 try(
     date_parse(

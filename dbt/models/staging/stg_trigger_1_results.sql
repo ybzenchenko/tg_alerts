@@ -1,7 +1,4 @@
-{{ config(materialized='view') }}
-
 select
-
     -- Identifiers
     trigger_id,
     swing_low_id,
