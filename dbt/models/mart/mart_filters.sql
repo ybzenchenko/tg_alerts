@@ -1,3 +1,5 @@
+{{ config(materialized='table') }}
+
 SELECT
   p.run_date,
   r.percentage_of_continued,

@@ -1,3 +1,5 @@
+{{ config(materialized='table') }}
+
 SELECT
   symbol,
   count(*) as total_cnt
