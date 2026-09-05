@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: mart_filters
+
+    columns:
+      - name: run_date
+        data_tests:
+          - not_null
+          - unique
