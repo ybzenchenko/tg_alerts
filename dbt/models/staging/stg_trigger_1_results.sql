@@ -11,92 +11,66 @@ select
 
     try_cast(trigger_date as date) as trigger_date,
 
-    concat(
-        substr(lpad(trigger_time, 4, '0'), 1, 2),
-        ':',
-        substr(lpad(trigger_time, 4, '0'), 3, 2)
-    ) as trigger_time,
+    {{ format_hhmm('trigger_time') }}
+        as trigger_time,
 
     -- Trigger timestamps
-    try(
-        date_parse(
-            replace(substr(trigger_discovered_datetime_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as trigger_discovered_datetime_utc,
+    {{ parse_utc_timestamp('trigger_discovered_datetime_utc') }}
+        as trigger_discovered_datetime_utc,
 
     try_cast(trigger_candle_date as date) as trigger_candle_date,
 
-    concat(
-        substr(lpad(trigger_candle_time, 4, '0'), 1, 2),
-        ':',
-        substr(lpad(trigger_candle_time, 4, '0'), 3, 2)
-    ) as trigger_candle_time,
+    {{ format_hhmm('trigger_candle_time') }}
+        as trigger_candle_time,
 
-    try(
-        date_parse(
-            replace(substr(trigger_candle_open_time_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as trigger_candle_open_time_utc,
+    {{ parse_utc_timestamp('trigger_candle_open_time_utc') }}
+        as trigger_candle_open_time_utc,
 
-    try(
-        date_parse(
-            replace(substr(trigger_candle_close_time_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as trigger_candle_close_time_utc,
+    {{ parse_utc_timestamp('trigger_candle_close_time_utc') }}
+        as trigger_candle_close_time_utc,
 
-    try(
-        date_parse(
-            replace(substr(trigger_candle_event_close_time_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as trigger_candle_event_close_time_utc,
+    {{ parse_utc_timestamp('trigger_candle_event_close_time_utc') }}
+        as trigger_candle_event_close_time_utc,
 
     -- Entry
-    try(
-        date_parse(
-            replace(substr(entry_time_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as entry_time_utc,
+    {{ parse_utc_timestamp('entry_time_utc') }}
+        as entry_time_utc,
 
     try_cast(entry_date as date) as entry_date,
 
-    concat(
-        substr(lpad(entry_time, 4, '0'), 1, 2),
-        ':',
-        substr(lpad(entry_time, 4, '0'), 3, 2)
-    ) as entry_time,
+    {{ format_hhmm('entry_time') }}
+        as entry_time,
 
     -- Swing low
-    try(
-        date_parse(
-            replace(substr(swing_low_open_time_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as swing_low_open_time_utc,
+    {{ parse_utc_timestamp('swing_low_open_time_utc') }}
+        as swing_low_open_time_utc,
 
-    try_cast(swing_low_price as double) as swing_low_price,
+    try_cast(
+        swing_low_price as double
+    ) as swing_low_price,
 
-    try(
-        date_parse(
-            replace(substr(confirmation_candle_open_time_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as confirmation_candle_open_time_utc,
+    {{ parse_utc_timestamp('confirmation_candle_open_time_utc') }}
+        as confirmation_candle_open_time_utc,
 
     -- Trigger candle OHLC
-    try_cast(trigger_candle_open as double) as trigger_candle_open,
-    try_cast(trigger_candle_high as double) as trigger_candle_high,
-    try_cast(trigger_candle_low as double) as trigger_candle_low,
-    try_cast(trigger_candle_close as double) as trigger_candle_close,
+    try_cast(trigger_candle_open as double)
+        as trigger_candle_open,
 
-    try_cast(entry_price as double) as entry_price,
+    try_cast(trigger_candle_high as double)
+        as trigger_candle_high,
+
+    try_cast(trigger_candle_low as double)
+        as trigger_candle_low,
+
+    try_cast(trigger_candle_close as double)
+        as trigger_candle_close,
+
+    try_cast(entry_price as double)
+        as entry_price,
 
     -- Candle activity
-    try_cast(trigger_candle_volume as double) as trigger_candle_volume,
+    try_cast(trigger_candle_volume as double)
+        as trigger_candle_volume,
 
     try_cast(
         trigger_candle_quote_volume as double
@@ -133,34 +107,25 @@ select
         trigger_quote_volume_vs_avg_previous_max_40_ratio as double
     ) as trigger_quote_volume_vs_avg_previous_max_40_ratio,
 
-    try(
-        date_parse(
-            replace(substr(volume_lookback_first_candle_open_time_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as volume_lookback_first_candle_open_time_utc,
+    {{ parse_utc_timestamp('volume_lookback_first_candle_open_time_utc') }}
+        as volume_lookback_first_candle_open_time_utc,
 
-    try(
-        date_parse(
-            replace(substr(volume_lookback_last_candle_open_time_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as volume_lookback_last_candle_open_time_utc,
+    {{ parse_utc_timestamp('volume_lookback_last_candle_open_time_utc') }}
+        as volume_lookback_last_candle_open_time_utc,
 
     -- S3 lineage
-    nullif(trim(trigger_candle_source_s3_key), '') as trigger_candle_source_s3_key,
+    {{ null_if_blank('trigger_candle_source_s3_key') }}
+        as trigger_candle_source_s3_key,
 
-    nullif(trim(swing_low_source_s3_key), '') as swing_low_source_s3_key,
+    {{ null_if_blank('swing_low_source_s3_key') }}
+        as swing_low_source_s3_key,
 
-    nullif(trim(recent_activity_s3_key), '') as recent_activity_s3_key,
+    {{ null_if_blank('recent_activity_s3_key') }}
+        as recent_activity_s3_key,
 
     -- Trigger processing metadata
-    try(
-        date_parse(
-            replace(substr(trigger_checker_run_datetime_utc, 1, 19), 'T', ' '),
-            '%Y-%m-%d %H:%i:%s'
-        )
-    ) as trigger_checker_run_datetime_utc,
+    {{ parse_utc_timestamp('trigger_checker_run_datetime_utc') }}
+        as trigger_checker_run_datetime_utc,
 
     trigger_rule
 

@@ -1,19 +1,12 @@
 select
     -- Run metadata
-try(
-    date_parse(
-        substr(run_datetime_utc, 1, 19),
-        '%Y-%m-%d %H:%i:%s'
-    )
-) as run_datetime_utc,
+    {{ parse_utc_timestamp('run_datetime_utc') }}
+        as run_datetime_utc,
 
-try_cast(run_date as date) as run_date,
+    try_cast(run_date as date) as run_date,
 
-concat(
-    substr(lpad(run_time, 4, '0'), 1, 2),
-    ':',
-    substr(lpad(run_time, 4, '0'), 3, 2)
-) as run_time,
+    {{ format_hhmm('run_time') }}
+        as run_time,
 
     script_name,
     status,
