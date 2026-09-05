@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: mart_symbols
+
+    columns:
+      - name: symbol
+        data_tests:
+          - not_null
+          - unique
