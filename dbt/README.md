@@ -60,6 +60,11 @@ dbt/
 │   └── null_if_blank.sql
 │
 ├── tests/
+│   ├── assert_general_filter_counts_reconcile.sql
+│   ├── assert_percentage_of_continued_valid.sql
+│   ├── assert_trigger_1_rules.sql
+│   └── assert_trigger_2_rules.sql
+│
 ├── analyses/
 ├── seeds/
 └── snapshots/
@@ -181,24 +186,67 @@ Current mart-level expectations include:
 
 Source-level tests validate important raw fields such as trigger IDs and timestamps.
 
-Custom singular tests can be stored in:
+### Custom singular tests
+
+Custom tests are stored in:
 
 ```text
 tests/
 ```
 
-A singular test passes when its SQL query returns **zero rows**.
+A singular dbt test passes when its SQL query returns **zero rows**. Each test therefore selects records that violate an expected business rule or data-quality condition.
 
-Example:
+#### `assert_general_filter_counts_reconcile.sql`
 
-```sql
-select
-    symbol,
-    count(*) as row_count
-from {{ ref('mart_symbols') }}
-group by symbol
-having count(*) > 1
+Checks that the final number of symbols in a general-filter run reconciles with the two active-cycle groups:
+
+```text
+final_general_filters_count
+=
+active_cycle_new_count
++
+active_cycle_continued_count
 ```
+
+The test returns rows where this relationship does not hold.
+
+#### `assert_percentage_of_continued_valid.sql`
+
+Validates that `percentage_of_continued` remains within the expected range:
+
+```text
+0 to 100
+```
+
+Any record below `0` or above `100` is returned as a test failure.
+
+#### `assert_trigger_1_rules.sql`
+
+Independently validates important Trigger 1 conditions against the stored trigger results.
+
+The test identifies records where any of the following is true:
+
+- the trigger candle close is not below the swing-low price
+- volume confirmation did not pass
+- trigger quote volume is not greater than the previous lookback average
+
+This provides a dbt-side validation of the Trigger 1 logic produced by the Python alert engine.
+
+#### `assert_trigger_2_rules.sql`
+
+Validates the main conditions required for a Trigger 2 result, including:
+
+- `C1 close < C2 close`
+- `C2 close < C3 close`
+- C3 closes above the highest close of the previous 39 candles
+- C3 upper-shadow condition passes
+- C3 lower-shadow condition passes
+- C1 and C2 volume confirmations pass
+- C1 and C2 body confirmations pass
+
+Rows are returned when the stored Trigger 2 result does not satisfy all of these conditions.
+
+These custom tests complement generic `not_null` and `unique` checks by validating business logic and the consistency of the alert-generation pipeline.
 
 The project currently configures data tests to return warnings by default:
 
@@ -208,215 +256,6 @@ data_tests:
 ```
 
 Individual critical tests can override this with `severity: error`.
-
----
-
-## Source freshness
-
-Freshness checks are configured for the general-filter log sources using `run_datetime_utc`.
-
-Run:
-
-```bash
-dbt source freshness
-```
-
-> Note: if the TG Alerts production collection is intentionally stopped, freshness warnings are expected because no new source data is arriving.
-
----
-
-## Local environment
-
-The project is developed locally with a dedicated Conda environment:
-
-```text
-dbt-athena
-```
-
-Current working versions:
-
-```text
-dbt Core:   1.12.x
-dbt Athena: 1.11.x
-```
-
-Activate the environment in Windows / VS Code:
-
-```bat
-call C:\ProgramData\anaconda3\Scripts\activate.bat C:\ProgramData\anaconda3\envs\dbt-athena
-```
-
-Then move into the dbt project:
-
-```bat
-cd C:\Users\Admin\Desktop\git\tg_alerts\dbt
-```
-
-Verify:
-
-```bat
-dbt --version
-```
-
----
-
-## Athena connection
-
-The local dbt profile is stored outside the repository:
-
-```text
-C:\Users\Admin\.dbt\profiles.yml
-```
-
-Important configuration:
-
-```text
-adapter:        Athena
-catalog:        awsdatacatalog
-schema:         tg_alerts_analytics
-region:         eu-north-1
-
-S3 query results:
-s3://bin-tickers-yev/athena-query-results/dbt/
-
-dbt-managed data:
-s3://bin-tickers-yev/analytics/dbt/
-```
-
-`profiles.yml` should **not** be committed because connection configuration belongs outside the project repository.
-
-AWS authentication is resolved through the normal AWS/boto3 credential chain.
-
----
-
-## Common dbt commands
-
-Run all models:
-
-```bash
-dbt run
-```
-
-Run only staging models:
-
-```bash
-dbt run --select path:models/staging
-```
-
-Run only marts:
-
-```bash
-dbt run --select path:models/mart
-```
-
-Run all tests:
-
-```bash
-dbt test
-```
-
-Test a specific model:
-
-```bash
-dbt test --select mart_symbols
-```
-
-Run source tests:
-
-```bash
-dbt test --select source:funnel
-```
-
-Check source freshness:
-
-```bash
-dbt source freshness
-```
-
-Compile Jinja/macros without executing models:
-
-```bash
-dbt compile
-```
-
-Build models and associated tests according to the dbt DAG:
-
-```bash
-dbt build
-```
-
----
-
-## Documentation and lineage
-
-Generate dbt documentation:
-
-```bash
-dbt docs generate
-```
-
-Serve it locally:
-
-```bash
-dbt docs serve
-```
-
-The generated documentation provides:
-
-- model and source documentation
-- column metadata
-- tests
-- dependencies
-- model lineage / DAG
-
-Generated artifacts are written to:
-
-```text
-target/
-```
-
-`target/` is build output and should not be committed to Git.
-
----
-
-## Git
-
-Recommended dbt-specific ignored files:
-
-```gitignore
-target/
-dbt_packages/
-logs/
-.env
-```
-
-Source-controlled dbt content should include:
-
-```text
-dbt_project.yml
-models/
-macros/
-tests/
-analyses/
-seeds/
-snapshots/
-```
-
----
-
-## Planned improvements
-
-Useful next steps for the dbt layer include:
-
-- additional business-rule singular tests
-- unit tests for transformation logic
-- model and column descriptions
-- `dbt-utils` package
-- one incremental model for append-only historical data
-- Airflow orchestration for dbt execution and testing
-- downstream exposures once dashboards or other consumers are added
-
-Seeds and snapshots will only be introduced if there is a real project requirement rather than adding them artificially.
 
 ---
 
