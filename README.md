@@ -563,92 +563,6 @@ When running on EC2, an IAM role can provide S3 access directly to `boto3` and t
 
 ---
 
-## Environment Variables and Secrets
-
-Telegram credentials are not hardcoded in source code.
-
-The live engine reads:
-
-```text
-TELEGRAM_BOT_TOKEN
-TELEGRAM_CHAT_ID
-```
-
-Example:
-
-```bash
-export TELEGRAM_BOT_TOKEN="your_bot_token"
-export TELEGRAM_CHAT_ID="your_chat_id"
-```
-
-In the EC2 deployment, secrets can be supplied to the `systemd` service through a protected environment file.
-
-Do **not** commit:
-
-- `.env` files
-- Telegram bot tokens
-- AWS access keys
-- AWS secret keys
-- private SSH keys
-- local virtual environments
-- generated Python cache files
-
----
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone <repository-url>
-cd tg_alerts
-```
-
-Create a virtual environment:
-
-```bash
-python -m venv venv
-```
-
-Activate it on Linux/macOS:
-
-```bash
-source venv/bin/activate
-```
-
-Install the main dependencies:
-
-```bash
-pip install pandas requests boto3 websocket-client apache-airflow
-```
-
----
-
-## Running the Python Components
-
-### General filter
-
-```bash
-python src/crypto_general_filters.py
-```
-
-### Live engine
-
-```bash
-python src/crypto_live_engine_triggers.py
-```
-
-For production use, the live engine should run under a process supervisor such as `systemd`.
-
-### Airflow schedule
-
-```text
-Schedule: 0 1 * * *
-Timezone: UTC
-```
-
----
-
 ## Reliability Features
 
 The project includes:
@@ -739,14 +653,6 @@ The REST API supports:
 - startup recovery;
 - missing-candle backfill.
 
-### Why use S3 and memory together?
-
-S3 provides durable persistent storage.
-
-In-memory history gives the running engine fast access to the recent candles required by the trigger algorithms.
-
-After restart, recent history is restored from S3.
-
 ### Why define Athena tables manually instead of using a Glue crawler?
 
 The S3 schemas and partition structures are known in advance.
@@ -780,25 +686,6 @@ dbt adds a version-controlled transformation layer that provides:
 - explicit model dependencies and lineage.
 
 This keeps raw ingestion separate from analytical transformation and makes the analytics layer easier to test, review, and extend.
-
----
-
-## Future Improvements
-
-Possible next steps include:
-
-- Evaluate post-trigger price performance over multiple time horizons.
-- Convert larger analytical datasets from CSV to Parquet.
-- Add an incremental dbt model for append-only historical data.
-- Add dbt unit tests for transformation logic.
-- Add downstream dbt exposures when dashboards or other consumers are introduced.
-- Orchestrate dbt execution and testing through Airflow.
-- Add CloudWatch health alarms.
-- Add CI/CD for deployment and analytical validation.
-- Add S3 lifecycle rules for historical candle retention.
-- Improve S3 prefix discovery for long-running deployments.
-- Add dashboards for trigger frequency and performance.
-- Containerize runtime components.
 
 ---
 
