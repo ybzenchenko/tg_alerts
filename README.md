@@ -18,8 +18,8 @@ The solution combines three different workloads:
 2. **Continuous live monitoring**  
    A long-running Python service consumes Binance WebSocket streams, evaluates closed 3-minute and 5-minute candles, detects trigger patterns, and sends Telegram alerts.
 
-3. **Post-run analytics**  
-   Data stored in S3 is registered as external Athena tables through the AWS Glue Data Catalog. This makes the collected trigger and processing-log data queryable without loading it into a separate database.
+3. **Post-run analytics and transformation**  
+   Data stored in S3 is registered as external Athena tables through the AWS Glue Data Catalog. A dbt project then builds typed staging models, reusable intermediate models, analytics-ready marts, reusable macros, and automated data-quality / business-rule tests on top of Athena.
 
 The production pipeline was deployed on an Ubuntu EC2 instance and used to collect a one-week market-data sample for subsequent analysis.
 
@@ -42,6 +42,7 @@ flowchart TD
 
     GLUE[AWS Glue Data Catalog]
     ATHENA[Amazon Athena]
+    DBT[dbt Analytics Layer]
     ANALYSIS[SQL / Analytical Modelling]
 
     AIRFLOW --> FILTERS
@@ -59,7 +60,8 @@ flowchart TD
     S3 --> GLUE
     GLUE --> ATHENA
     S3 --> ATHENA
-    ATHENA --> ANALYSIS
+    ATHENA --> DBT
+    DBT --> ANALYSIS
 ```
 
 ### Runtime separation
@@ -101,12 +103,24 @@ The live engine is different: it is a continuously running WebSocket process and
 │       ├── create_general_filters_run_summary_raw.sql
 │       └── create_general_filters_symbol_processing_log_raw.sql
 │
+├── dbt/
+│   ├── dbt_project.yml
+│   ├── README.md
+│   ├── models/
+│   │   ├── staging/
+│   │   ├── int/
+│   │   └── mart/
+│   ├── macros/
+│   └── tests/
+│
 └── scripts/
     └── maintenance/
         ├── reorganize_general_filters_logs_s3.cmd
         ├── reorganize_general_filters_logs_s3.sh
         └── README.md
 ```
+
+The `dbt/` directory contains the analytical transformation layer built on top of the Athena raw tables. Its own `README.md` documents the dbt models, macros, tests, and project structure in more detail.
 
 ---
 
@@ -384,9 +398,140 @@ The raw CSV fields are generally registered as strings first, with stronger data
 
 ---
 
-## Analytical Layer
+## dbt Analytical Layer
 
-The collected data can now be queried directly in Athena for questions such as:
+The repository now includes a dbt project under:
+
+```text
+dbt/
+```
+
+dbt reads the Athena raw tables registered in the `funnel` schema and creates a structured transformation layer:
+
+```text
+Athena raw sources
+        |
+        v
+dbt staging views
+        |
+        v
+dbt intermediate views
+        |
+        v
+dbt mart tables
+```
+
+### Raw sources
+
+The dbt project declares four Athena sources:
+
+```text
+funnel.trigger_1_results_raw
+funnel.trigger_2_results_raw
+funnel.general_filters_run_summary_raw
+funnel.general_filters_symbol_processing_log_raw
+```
+
+### Staging models
+
+The staging layer standardizes the raw CSV-backed Athena tables.
+
+Main responsibilities include:
+
+- casting raw string values to analytical data types;
+- parsing UTC timestamp strings;
+- formatting `HHMM` partition values as `HH:MM`;
+- converting blank strings to `NULL` where appropriate;
+- using partition metadata as canonical date/time fields;
+- preserving trigger and S3 lineage metadata.
+
+Current staging models:
+
+```text
+stg_trigger_1_results
+stg_trigger_2_results
+stg_general_filters_run_summary
+stg_general_filters_symbol_processing_log
+```
+
+Staging models are materialized as Athena views.
+
+### Intermediate models
+
+The intermediate layer contains reusable business logic built on top of staging models.
+
+Current models:
+
+```text
+int_trigger_1_results
+int_trigger_2_results
+int_general_filters_run_summary
+int_general_filters_symbol_processing_log
+```
+
+Intermediate models are materialized as views.
+
+### Mart models
+
+The mart layer provides analytics-ready datasets.
+
+Current marts:
+
+```text
+mart_filters
+mart_symbols
+```
+
+Mart models are materialized as tables.
+
+### Reusable macros
+
+Repeated staging transformations were moved into dbt macros:
+
+```text
+parse_utc_timestamp
+format_hhmm
+null_if_blank
+```
+
+This avoids repeating timestamp parsing, `HHMM` formatting, and blank-string cleanup logic across multiple models.
+
+### Data tests
+
+The project uses built-in dbt tests such as:
+
+```text
+not_null
+unique
+```
+
+and custom singular SQL tests for business-rule validation.
+
+Current custom tests include:
+
+```text
+assert_general_filter_counts_reconcile.sql
+assert_percentage_of_continued_valid.sql
+assert_trigger_1_rules.sql
+assert_trigger_2_rules.sql
+```
+
+These tests validate:
+
+- reconciliation between final filter counts and active-cycle groups;
+- percentage values remaining within the expected 0–100 range;
+- Trigger 1 results continuing to satisfy the swing-low breakdown / volume conditions;
+- Trigger 2 results continuing to satisfy the three-candle rejection, wick, volume, and body conditions.
+
+This gives the project a second validation layer: the Python services generate the operational results, while dbt independently checks the stored analytical outputs and business rules.
+
+The dbt project is documented in more detail in:
+
+```text
+dbt/README.md
+```
+
+The resulting analytical layer supports questions such as:
 
 - How many Trigger 1 and Trigger 2 events occurred?
 - Which symbols generated the most alerts?
@@ -394,8 +539,6 @@ The collected data can now be queried directly in Athena for questions such as:
 - Which general-filter runs produced the largest eligible-symbol sets?
 - Which symbols repeatedly passed or failed specific filtering stages?
 - How did price behave after each detected trigger?
-
-A future dbt layer can sit on top of Athena to create reusable staging and analytical models while keeping the original S3 files as the raw source of truth.
 
 ---
 
@@ -521,6 +664,9 @@ The project includes:
 - Environment-variable based secret management.
 - Hive-style S3 partitioning.
 - Version-controlled Athena table definitions.
+- Version-controlled dbt transformations.
+- dbt generic and custom business-rule tests.
+- Reusable dbt macros for repeated transformation logic.
 
 ---
 
@@ -548,6 +694,8 @@ The project includes:
 - Amazon S3
 - AWS Glue Data Catalog
 - Amazon Athena
+- dbt Core
+- dbt-athena
 - AWS CLI
 
 ### Notifications and version control
@@ -616,18 +764,37 @@ Explicit Athena DDL provides:
 
 Keeping both file types under the same Athena table location would mix incompatible CSV structures. Separate S3 prefixes allow each dataset to have its own external table.
 
+
+### Why add dbt on top of Athena?
+
+Athena provides direct SQL access to the raw S3 datasets, but the raw tables are intentionally close to the source files and mostly use string-based schemas.
+
+dbt adds a version-controlled transformation layer that provides:
+
+- typed staging models;
+- reusable intermediate logic;
+- analytics-ready marts;
+- reusable Jinja macros;
+- generic data-quality tests;
+- custom business-rule tests;
+- explicit model dependencies and lineage.
+
+This keeps raw ingestion separate from analytical transformation and makes the analytics layer easier to test, review, and extend.
+
 ---
 
 ## Future Improvements
 
 Possible next steps include:
 
-- Build dbt staging and analytical models on top of Athena.
 - Evaluate post-trigger price performance over multiple time horizons.
-- Convert analytical datasets from CSV to Parquet.
-- Add automated tests for trigger logic.
+- Convert larger analytical datasets from CSV to Parquet.
+- Add an incremental dbt model for append-only historical data.
+- Add dbt unit tests for transformation logic.
+- Add downstream dbt exposures when dashboards or other consumers are introduced.
+- Orchestrate dbt execution and testing through Airflow.
 - Add CloudWatch health alarms.
-- Add CI/CD for deployment.
+- Add CI/CD for deployment and analytical validation.
 - Add S3 lifecycle rules for historical candle retention.
 - Improve S3 prefix discovery for long-running deployments.
 - Add dashboards for trigger frequency and performance.
